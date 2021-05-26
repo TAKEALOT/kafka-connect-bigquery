@@ -24,6 +24,7 @@ import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.Clustering;
 import com.google.cloud.bigquery.Field;
+import com.google.cloud.bigquery.FieldList;
 import com.google.cloud.bigquery.LegacySQLTypeName;
 import com.google.cloud.bigquery.StandardTableDefinition;
 import com.google.cloud.bigquery.TableId;
@@ -348,8 +349,22 @@ public class SchemaManager {
    */
   private com.google.cloud.bigquery.Schema unionizeSchemas(
       com.google.cloud.bigquery.Schema firstSchema, com.google.cloud.bigquery.Schema secondSchema) {
-    Map<String, Field> firstSchemaFields = schemaFields(firstSchema);
-    Map<String, Field> secondSchemaFields = schemaFields(secondSchema);
+    final FieldList unionizedFields = unionizeFields(firstSchema.getFields(), secondSchema.getFields());
+
+    return com.google.cloud.bigquery.Schema.of(unionizedFields);
+  }
+
+  /**
+   * Returns a single unionized list of BigQuery Fields from two lists of BigQuery Fields.
+   * Nested fields are recursively unionized.
+   * @param firstList The first list of BigQuery fields to unionize
+   * @param secondList The second list of BigQuery fields to unionize
+   * @return The resulting unionized BigQuery schema
+   */
+  private com.google.cloud.bigquery.FieldList unionizeFields(
+          com.google.cloud.bigquery.FieldList firstList, com.google.cloud.bigquery.FieldList secondList) {
+    Map<String, Field> firstSchemaFields = buildFieldDictionary(firstList);
+    Map<String, Field> secondSchemaFields = buildFieldDictionary(secondList);
     Map<String, Field> unionizedSchemaFields = new LinkedHashMap<>();
 
     firstSchemaFields.forEach((name, firstField) -> {
@@ -361,6 +376,9 @@ public class SchemaManager {
         } else {
           unionizedSchemaFields.put(name, firstField);
         }
+      } else if (firstField.getType() == LegacySQLTypeName.RECORD && secondField.getType() == LegacySQLTypeName.RECORD){
+        //Create new field with this name containing a union of the subfields
+        unionizedSchemaFields.put(name, Field.of(name, LegacySQLTypeName.RECORD, unionizeFields(firstField.getSubFields(), secondField.getSubFields())));
       } else if (isFieldRelaxation(firstField, secondField)) {
         unionizedSchemaFields.put(name, secondField);
       } else {
@@ -371,14 +389,15 @@ public class SchemaManager {
     secondSchemaFields.forEach((name, secondField) -> {
       if (!unionizedSchemaFields.containsKey(name)) {
         if (Field.Mode.REPEATED.equals(secondField.getMode())) {
-        // Repeated fields are implicitly nullable; no need to set a new mode for them
+          // Repeated fields are implicitly nullable; no need to set a new mode for them
           unionizedSchemaFields.put(name, secondField);
         } else {
           unionizedSchemaFields.put(name, secondField.toBuilder().setMode(Field.Mode.NULLABLE).build());
         }
       }
     });
-    return com.google.cloud.bigquery.Schema.of(unionizedSchemaFields.values());
+
+    return FieldList.of(unionizedSchemaFields.values());
   }
 
   private void validateSchemaChange(
@@ -455,8 +474,18 @@ public class SchemaManager {
    * @return A map allowing lookup of schema fields by name
    */
   private Map<String, Field> schemaFields(com.google.cloud.bigquery.Schema schema) {
-    Map<String, Field> result = new LinkedHashMap<>();
-    schema.getFields().forEach(field -> {
+    return buildFieldDictionary(schema.getFields());
+  }
+
+  /**
+   * Returns a dictionary providing lookup of each field by name. The ordering of the
+   * fields in the list is preserved in the returned map.
+   * @param fields List of fields
+   * @return A map allowing lookup of schema fields by name
+   */
+  private Map<String, Field> buildFieldDictionary(com.google.cloud.bigquery.FieldList fields) {
+    final Map<String, Field> result = new LinkedHashMap<>();
+    fields.forEach(field -> {
       if (field.getMode() == null) {
         field = field.toBuilder().setMode(Field.Mode.NULLABLE).build();
       }

@@ -574,4 +574,84 @@ public class SchemaManagerTest {
     when(result.valueSchema()).thenReturn(valueSchema);
     return result;
   }
+
+  @Test
+  public void testUnionizedUpdateWithNestedChanges() {
+    com.google.cloud.bigquery.Schema existingSchema = com.google.cloud.bigquery.Schema.of(
+            Field.newBuilder("f1", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.REQUIRED).build(),
+            Field.of(
+                    "nested1", LegacySQLTypeName.RECORD,
+                    Field.newBuilder("nf1.1", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.NULLABLE).build(),
+                    Field.newBuilder("nf1.2", LegacySQLTypeName.INTEGER).setMode(Field.Mode.NULLABLE).build()
+            ),
+            Field.newBuilder("f2", LegacySQLTypeName.INTEGER).setMode(Field.Mode.NULLABLE).build(),
+            Field.of(
+                    "nested2", LegacySQLTypeName.RECORD,
+                    Field.newBuilder("nf2.1", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.NULLABLE).build(),
+                    Field.of(
+                            "nested2.2", LegacySQLTypeName.RECORD,
+                            Field.newBuilder("nf2.2.1", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.NULLABLE).build(),
+                            Field.newBuilder("nf2.2.2", LegacySQLTypeName.INTEGER).setMode(Field.Mode.NULLABLE).build()
+                    )
+            )
+    );
+
+    com.google.cloud.bigquery.Schema newSchema = com.google.cloud.bigquery.Schema.of(
+            Field.newBuilder("f1", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.REQUIRED).build(),
+            Field.of(
+                    "nested1", LegacySQLTypeName.RECORD,
+                    //nf1.1 dropped
+                    Field.newBuilder("nf1.2", LegacySQLTypeName.INTEGER).setMode(Field.Mode.NULLABLE).build(),
+                    //nf1.3 added
+                    Field.newBuilder("nf1.3", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.NULLABLE).build()
+            ),
+            //f2 dropped
+            Field.of(
+                    "nested2", LegacySQLTypeName.RECORD,
+                    Field.newBuilder("nf2.1", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.NULLABLE).build(),
+                    Field.of(
+                            "nested2.2", LegacySQLTypeName.RECORD,
+                            //nf2.2.1 dropped
+                            Field.newBuilder("nf2.2.2", LegacySQLTypeName.INTEGER).setMode(Field.Mode.NULLABLE).build(),
+                            //nf2.2.3 added
+                            Field.newBuilder("nf2.2.3", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.NULLABLE).build()
+                    ),
+                    //nf2.3 added
+                    Field.newBuilder("nf2.3", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.NULLABLE).build()
+            ),
+            //f3 added
+            Field.newBuilder("f3", LegacySQLTypeName.INTEGER).setMode(Field.Mode.NULLABLE).build()
+    );
+
+    List<com.google.cloud.bigquery.Schema> newSchemas =
+            Arrays.asList(newSchema);
+
+    com.google.cloud.bigquery.Schema expectedSchema = com.google.cloud.bigquery.Schema.of(
+            Field.newBuilder("f1", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.REQUIRED).build(),
+            Field.of(
+                    "nested1", LegacySQLTypeName.RECORD,
+                    Field.newBuilder("nf1.1", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.NULLABLE).build(),
+                    Field.newBuilder("nf1.2", LegacySQLTypeName.INTEGER).setMode(Field.Mode.NULLABLE).build(),
+                    Field.newBuilder("nf1.3", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.NULLABLE).build()
+            ),
+            Field.newBuilder("f2", LegacySQLTypeName.INTEGER).setMode(Field.Mode.NULLABLE).build(),
+            Field.of(
+                    "nested2", LegacySQLTypeName.RECORD,
+                    Field.newBuilder("nf2.1", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.NULLABLE).build(),
+                    Field.of(
+                            "nested2.2", LegacySQLTypeName.RECORD,
+                            Field.newBuilder("nf2.2.1", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.NULLABLE).build(),
+                            Field.newBuilder("nf2.2.2", LegacySQLTypeName.INTEGER).setMode(Field.Mode.NULLABLE).build(),
+                            Field.newBuilder("nf2.2.3", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.NULLABLE).build()
+                            ),
+                    //nf2.3 added
+                    Field.newBuilder("nf2.3", LegacySQLTypeName.BOOLEAN).setMode(Field.Mode.NULLABLE).build()
+            ),
+            Field.newBuilder("f3", LegacySQLTypeName.INTEGER).setMode(Field.Mode.NULLABLE).build()
+    );
+
+    SchemaManager schemaManager = createSchemaManager(true, true, true);
+
+    testGetAndValidateProposedSchema(schemaManager, existingSchema, newSchemas, expectedSchema);
+  }
 }
