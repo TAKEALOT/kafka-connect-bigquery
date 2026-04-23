@@ -43,14 +43,16 @@ import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableResult;
-import com.wepay.kafka.connect.bigquery.BigQueryHelper;
+import com.wepay.kafka.connect.bigquery.GcpClientBuilder;
 import com.wepay.kafka.connect.bigquery.config.BigQuerySinkConfig;
 import com.wepay.kafka.connect.bigquery.utils.FieldNameSanitizer;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.connect.runtime.AbstractStatus;
 import org.apache.kafka.connect.runtime.WorkerConfig;
+import org.apache.kafka.connect.runtime.isolation.PluginDiscoveryMode;
 import org.apache.kafka.connect.runtime.rest.entities.ConnectorStateInfo;
 import org.apache.kafka.connect.util.clusters.EmbeddedConnectCluster;
 import org.apache.kafka.test.IntegrationTest;
@@ -79,7 +81,6 @@ public abstract class BaseConnectorIT {
   private static final String KEYFILE_ENV_VAR = "KCBQ_TEST_KEYFILE";
   private static final String PROJECT_ENV_VAR = "KCBQ_TEST_PROJECT";
   private static final String DATASET_ENV_VAR = "KCBQ_TEST_DATASET";
-  private static final String KEYSOURCE_ENV_VAR = "KCBQ_TEST_KEYSOURCE";
   private static final String GCS_BUCKET_ENV_VAR = "KCBQ_TEST_BUCKET";
   private static final String GCS_FOLDER_ENV_VAR = "KCBQ_TEST_FOLDER";
   private static final String TEST_NAMESPACE_ENV_VAR = "KCBQ_TEST_TABLE_SUFFIX";
@@ -99,6 +100,8 @@ public abstract class BaseConnectorIT {
     // Allow per-connector consumer configuration for throughput testing
     workerProps.put(
         WorkerConfig.CONNECTOR_CLIENT_POLICY_CLASS_CONFIG, "All");
+    // Set plugin discovery to hybrid_warn to avoid ServiceLoader manifest errors with Kafka 3.9.1
+    workerProps.put(WorkerConfig.PLUGIN_DISCOVERY_CONFIG, PluginDiscoveryMode.HYBRID_WARN.toString());
 
     connect = new EmbeddedConnectCluster.Builder()
         .name("kcbq-connect-cluster")
@@ -116,13 +119,13 @@ public abstract class BaseConnectorIT {
 
   protected void stopConnect() {
     if (kafkaAdminClient !=  null) {
-      kafkaAdminClient.close();
+      Utils.closeQuietly(kafkaAdminClient, "admin client for embedded Kafka cluster");
       kafkaAdminClient = null;
     }
 
     // stop all Connect, Kafka and Zk threads.
     if (connect != null) {
-      connect.stop();
+      Utils.closeQuietly(connect::stop, "embedded Connect, Kafka, and Zookeeper clusters");
       connect = null;
     }
   }
@@ -130,7 +133,7 @@ public abstract class BaseConnectorIT {
   protected Map<String, String> baseConnectorProps(int tasksMax) {
     Map<String, String> result = new HashMap<>();
 
-    result.put(CONNECTOR_CLASS_CONFIG, "BigQuerySinkConnector");
+    result.put(CONNECTOR_CLASS_CONFIG, "com.wepay.kafka.connect.bigquery.BigQuerySinkConnector");
     result.put(TASKS_MAX_CONFIG, Integer.toString(tasksMax));
 
     result.put(BigQuerySinkConfig.PROJECT_CONFIG, project());
@@ -144,9 +147,12 @@ public abstract class BaseConnectorIT {
   }
 
   protected BigQuery newBigQuery() {
-    return new BigQueryHelper()
-        .setKeySource(keySource())
-        .connect(project(), keyFile());
+    return new GcpClientBuilder.BigQueryBuilder()
+        .withKey(keyFile())
+        .withKeySource(GcpClientBuilder.KeySource.valueOf(keySource()))
+        .withProject(project())
+        .withUserAgent("ITTest-user-agent")
+        .build();
   }
 
   protected void waitForCommittedRecords(
@@ -210,7 +216,9 @@ public abstract class BaseConnectorIT {
       BigQuery bigQuery, String tableName, String sortColumn) throws InterruptedException {
 
     Table table = bigQuery.getTable(dataset(), tableName);
-    Schema schema = table.getDefinition().getSchema();
+    Schema schema = table
+        .getDefinition()
+        .getSchema();
 
     TableResult tableResult = bigQuery.query(QueryJobConfiguration.of(String.format(
         "SELECT * FROM `%s`.`%s` ORDER BY %s ASC",
@@ -297,13 +305,12 @@ public abstract class BaseConnectorIT {
    * @return the time this method discovered the connector has started, in milliseconds past epoch
    * @throws InterruptedException if this was interrupted
    */
-  protected long waitForConnectorToStart(String name, int numTasks) throws InterruptedException {
-    TestUtils.waitForCondition(
+  protected void waitForConnectorToStart(String name, int numTasks) throws InterruptedException {
+    waitForCondition(
         () -> assertConnectorAndTasksRunning(name, numTasks).orElse(false),
         CONNECTOR_STARTUP_DURATION_MS,
         "Connector tasks did not start in time."
     );
-    return System.currentTimeMillis();
   }
 
   /**
@@ -366,7 +373,7 @@ public abstract class BaseConnectorIT {
   }
 
   protected String keySource() {
-    return readEnvVar(KEYSOURCE_ENV_VAR, BigQuerySinkConfig.KEY_SOURCE_DEFAULT);
+    return BigQuerySinkConfig.KEY_SOURCE_DEFAULT;
   }
 
   protected String gcsBucket() {

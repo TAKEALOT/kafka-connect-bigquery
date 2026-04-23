@@ -16,7 +16,7 @@ fork of the project.
 
 ## Download
 
-The latest releases are available in the GitHub release tab, or via [tarballs in Maven central](http://search.maven.org/#search%7Cga%7C1%7Ca%3A%22kcbq-connector%22).
+The latest releases are available in the GitHub release tab, or via [Confluent Hub](https://www.confluent.io/hub/wepay/kafka-connect-bigquery).
 
 ## Standalone Quickstart
 
@@ -156,17 +156,32 @@ You must supply the following environment variables in order to run the tests:
 
 - `$KCBQ_TEST_PROJECT`: The name of the BigQuery project to use for the test
 - `$KCBQ_TEST_DATASET`: The name of the BigQuery dataset to use for the test
-- `$KCBQ_TEST_KEYFILE`: The key (either file or raw contents) used to authenticate with BigQuery
-during the test
+- `$KCBQ_TEST_KEYFILE`: The key file used to authenticate with BigQuery during the test
 - `$KCBQ_TEST_BUCKET`: The name of the GCS bucket to use (for testing the GCS batch loading feature)
-
-Optionally, the `$KCBQ_TEST_KEYSOURCE` variable can be supplied to specify whether the value of
-`$KCBQ_TEST_KEYFILE` is a path to a key file (if set to `FILE`) or the raw contents of a key file
-(if set to `JSON`). The default is `FILE`.
 
 The `$KCBQ_TEST_FOLDER` variable can be supplied to specify which subfolder of the GCS bucket should
 be used when testing the GCS batch loading feature; if not supplied, the top-level folder will be
 used.
+
+### Adding new GCP Credentials & BigQuery DataSet
+This section is optional in case one wants to use a different GCP project and generate new creds for that
+- **Create a GCP Service Account:** Follow instructions from https://cloud.google.com/iam/docs/creating-managing-service-accounts e.g.
+```
+gcloud iam service-accounts create kcbq-test --description="service account key for bigquery sink integration test" --display-name="kcbq-test"
+```
+- **Create Service Account Keys:** Follow instructions from https://cloud.google.com/iam/docs/creating-managing-service-account-keys e.g.
+```
+gcloud iam service-accounts keys create /tmp/creds.json --iam-account=kcbq-test@<GCP_PROJECT_NAME>.iam.gserviceaccount.com
+```
+- **Give BigQuery & Storage Admin Permissions to Service Account:**  
+  - Open https://console.cloud.google.com/iam-admin/iam?project=<GCP_PROJECT_NAME>
+  - Click on Add and enter New Principal as created above e.g. `kcbq-test@<GCP_PROJECT_NAME>.iam.gserviceaccount.com`
+  - Add following 2 roles from "Select a role" drop down menu:
+    - BigQuery -> BigQuery Admin
+    - Cloud Storage -> Storage Admin
+- **Add a BigQuery DataSet into the Project:**
+  - Open https://console.cloud.google.com/bigquery?project=<GCP_PROJECT_NAME>
+  - Click on the 3 vertical dots against the project name and click on "Create dataset" and follow the steps there.
 
 ### Running the Integration Tests
 
@@ -240,3 +255,9 @@ verify its accuracy, it will be returned in ascending order based on that "row" 
   [Schema Registry]: https://github.com/confluentinc/schema-registry
   [Semantic Versioning]: http://semver.org
   [Zookeeper]: https://zookeeper.apache.org
+
+## Implementation details of different modes
+### Upsert/Delete with Legacy InsertAll API
+Click [here](https://docs.google.com/document/d/1p8_rLQqR9GIALIruB3-MjqR8EgYdaEw2rlFF1fxRJf0/edit#heading=h.lfiuaruj2s8y) to read the implementation details of upsert/delete mode with Legacy InsertAll API
+
+    

@@ -26,6 +26,7 @@ import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.InsertAllRequest;
 import com.google.cloud.bigquery.InsertAllResponse;
 
+import com.wepay.kafka.connect.bigquery.ErrantRecordHandler;
 import com.wepay.kafka.connect.bigquery.SchemaManager;
 import com.wepay.kafka.connect.bigquery.exception.BigQueryConnectException;
 
@@ -40,7 +41,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.SortedMap;
 
 /**
@@ -64,28 +64,18 @@ public class AdaptiveBigQueryWriter extends BigQueryWriter {
    * @param retry How many retries to make in the event of a 500/503 error.
    * @param retryWait How long to wait in between retries.
    * @param autoCreateTables Whether tables should be automatically created
+   * @param errantRecordHandler Used to handle errant records
    */
   public AdaptiveBigQueryWriter(BigQuery bigQuery,
                                 SchemaManager schemaManager,
                                 int retry,
                                 long retryWait,
-                                boolean autoCreateTables) {
-    super(retry, retryWait);
+                                boolean autoCreateTables,
+                                ErrantRecordHandler errantRecordHandler) {
+    super(retry, retryWait, errantRecordHandler);
     this.bigQuery = bigQuery;
     this.schemaManager = schemaManager;
     this.autoCreateTables = autoCreateTables;
-  }
-
-  private boolean isTableMissingSchema(BigQueryException exception) {
-    // If a table is missing a schema, it will raise a BigQueryException that the input is invalid
-    // For more information about BigQueryExceptions, see: https://cloud.google.com/bigquery/troubleshooting-errors
-    return exception.getReason() != null && exception.getReason().equalsIgnoreCase("invalid");
-  }
-
-  private boolean isTableNotExistedException(BigQueryException exception) {
-    // If a table does not exist, it will raise a BigQueryException that the input is notFound
-    // Referring to Google Cloud Error Codes Doc: https://cloud.google.com/bigquery/docs/error-messages?hl=en
-    return exception.getCode() == 404;
   }
 
   /**
@@ -111,9 +101,9 @@ public class AdaptiveBigQueryWriter extends BigQueryWriter {
       }
     } catch (BigQueryException exception) {
       // Should only perform one table creation attempt.
-      if (isTableNotExistedException(exception) && autoCreateTables) {
+      if (BigQueryErrorResponses.isNonExistentTableError(exception) && autoCreateTables) {
         attemptTableCreate(tableId.getBaseTableId(), new ArrayList<>(rows.keySet()));
-      } else if (isTableMissingSchema(exception)) {
+      } else if (BigQueryErrorResponses.isTableMissingSchemaError(exception)) {
         attemptSchemaUpdate(tableId, new ArrayList<>(rows.keySet()));
       } else {
         throw exception;
@@ -132,8 +122,14 @@ public class AdaptiveBigQueryWriter extends BigQueryWriter {
           logger.debug("re-attempting insertion");
           writeResponse = bigQuery.insertAll(request);
         } catch (BigQueryException exception) {
-          // no-op, we want to keep retrying the insert
-          logger.debug("insertion failed", exception);
+          if ((BigQueryErrorResponses.isNonExistentTableError(exception) && autoCreateTables)
+              || BigQueryErrorResponses.isTableMissingSchemaError(exception)
+          ) {
+            // no-op, we want to keep retrying the insert
+            logger.debug("insertion failed", exception);
+          } else {
+            throw exception;
+          }
         }
       } else {
         return writeResponse.getInsertErrors();
@@ -186,9 +182,9 @@ public class AdaptiveBigQueryWriter extends BigQueryWriter {
     boolean invalidSchemaError = false;
     for (List<BigQueryError> errorList : errors.values()) {
       for (BigQueryError error : errorList) {
-        if (error.getReason().equals("invalid") && (error.getMessage().contains("no such field") || error.getMessage().contains("Missing required field"))) {
+        if (BigQueryErrorResponses.isMissingRequiredFieldError(error) || BigQueryErrorResponses.isUnrecognizedFieldError(error)) {
           invalidSchemaError = true;
-        } else if (!error.getReason().equals("stopped")) {
+        } else if (!BigQueryErrorResponses.isStoppedError(error)) {
           /* if some rows are in the old schema format, and others aren't, the old schema
            * formatted rows will show up as error: stopped. We still want to continue if this is
            * the case, because these errors don't represent a unique error if there are also

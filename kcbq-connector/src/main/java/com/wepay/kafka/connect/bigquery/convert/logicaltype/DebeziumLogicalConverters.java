@@ -47,6 +47,7 @@ public class DebeziumLogicalConverters {
     LogicalConverterRegistry.register(MicroTimestamp.SCHEMA_NAME, new MicroTimestampConverter());
     LogicalConverterRegistry.register(Time.SCHEMA_NAME, new TimeConverter());
     LogicalConverterRegistry.register(ZonedTimestamp.SCHEMA_NAME, new ZonedTimestampConverter());
+    LogicalConverterRegistry.register(Timestamp.SCHEMA_NAME, new TimestampConverter());
   }
 
   private static final int MICROS_IN_SEC = 1000000;
@@ -101,7 +102,7 @@ public class DebeziumLogicalConverters {
 
       Long microRemainder = microTimestamp % MICROS_IN_SEC;
 
-      return formattedSecondsTimestamp + "." + microRemainder;
+      return formattedSecondsTimestamp + "." + String.format("%06d", microRemainder);
     }
   }
 
@@ -132,7 +133,7 @@ public class DebeziumLogicalConverters {
 
       Long microRemainder = microTimestamp % MICROS_IN_SEC;
 
-      return formattedSecondsTimestamp + "." + microRemainder;
+      return formattedSecondsTimestamp + "." + String.format("%06d", microRemainder);
     }
   }
 
@@ -151,7 +152,7 @@ public class DebeziumLogicalConverters {
 
     @Override
     public String convert(Object kafkaConnectObject) {
-      java.util.Date date = new java.util.Date((Long) kafkaConnectObject);
+      java.util.Date date = new java.util.Date((Integer) kafkaConnectObject);
       return getBQTimeFormat().format(date);
     }
   }

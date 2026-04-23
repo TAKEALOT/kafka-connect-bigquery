@@ -22,10 +22,9 @@ package com.wepay.kafka.connect.bigquery.write.row;
 import com.google.cloud.bigquery.BigQueryError;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.InsertAllRequest;
-
+import com.wepay.kafka.connect.bigquery.ErrantRecordHandler;
 import com.wepay.kafka.connect.bigquery.exception.BigQueryConnectException;
 import com.wepay.kafka.connect.bigquery.utils.PartitionedTableId;
-
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,37 +36,36 @@ import java.util.Random;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
+import java.util.TreeSet;
 
 /**
  * A class for writing lists of rows to a BigQuery table.
  */
 public abstract class BigQueryWriter {
 
-  private static final int FORBIDDEN = 403;
-  private static final int INTERNAL_SERVICE_ERROR = 500;
-  private static final int BAD_GATEWAY = 502;
-  private static final int SERVICE_UNAVAILABLE = 503;
-  private static final String QUOTA_EXCEEDED_REASON = "quotaExceeded";
-  private static final String RATE_LIMIT_EXCEEDED_REASON = "rateLimitExceeded";
-
   private static final int WAIT_MAX_JITTER = 1000;
 
   private static final Logger logger = LoggerFactory.getLogger(BigQueryWriter.class);
 
-  private static final Random random = new Random();
+  private final int retries;
+  private final long retryWaitMs;
+  private final Random random;
 
-  private int retries;
-  private long retryWaitMs;
+  private final ErrantRecordHandler errantRecordHandler;
 
   /**
    * @param retries the number of times to retry a request if BQ returns an internal service error
    *                or a service unavailable error.
    * @param retryWaitMs the amount of time to wait in between reattempting a request if BQ returns
    *                    an internal service error or a service unavailable error.
+   * @param errantRecordHandler Used to handle errant records
    */
-  public BigQueryWriter(int retries, long retryWaitMs) {
+  public BigQueryWriter(int retries, long retryWaitMs, ErrantRecordHandler errantRecordHandler) {
     this.retries = retries;
     this.retryWaitMs = retryWaitMs;
+
+    this.random = new Random();
+    this.errantRecordHandler = errantRecordHandler;
   }
 
   /**
@@ -124,44 +122,54 @@ public abstract class BigQueryWriter {
               rows.size() - failedRowsMap.size(), failedRowsMap.size());
           // update insert rows and retry in case of partial failure
           rows = getFailedRows(rows, failedRowsMap.keySet(), table);
-          mostRecentException = new BigQueryConnectException(failedRowsMap);
+          mostRecentException = new BigQueryConnectException(table.toString(), failedRowsMap);
           retryCount++;
         } else {
-          // throw an exception in case of complete failure
-          throw new BigQueryConnectException(failedRowsMap);
+          if (errantRecordHandler.getErrantRecordReporter() != null) {
+            failedRowsMap = filterAndSendRecordsToDLQ(rows, failedRowsMap, table);
+            if (failedRowsMap.isEmpty()) {
+              logger.info("Failed Row Map is empty");
+              return;
+            }
+            if (hasStoppedErrorRecords(failedRowsMap)) {
+                rows = getFailedRows(rows, failedRowsMap.keySet(), table);
+                mostRecentException = new BigQueryConnectException(table.toString(), failedRowsMap);
+                retryCount++;
+            } else {
+                throw new BigQueryConnectException(table.toString(), failedRowsMap);
+            }
+          } else {
+            // throw an exception in case of complete failure
+            throw new BigQueryConnectException(table.toString(), failedRowsMap);
+          }
         }
       } catch (BigQueryException err) {
         mostRecentException = err;
-        if (err.getCode() == INTERNAL_SERVICE_ERROR
-            || err.getCode() == SERVICE_UNAVAILABLE
-            || err.getCode() == BAD_GATEWAY) {
-          // backend error: https://cloud.google.com/bigquery/troubleshooting-errors
-          /* for BAD_GATEWAY: https://cloud.google.com/storage/docs/json_api/v1/status-codes
-             todo possibly this page is inaccurate for bigquery, but the message we are getting
-             suggest it's an internal backend error and we should retry, so lets take that at face
-             value. */
+        if (BigQueryErrorResponses.isBackendError(err)) {
           logger.warn("BQ backend error: {}, attempting retry", err.getCode());
           retryCount++;
-        } else if (err.getCode() == FORBIDDEN
-                   && err.getError() != null
-                   && QUOTA_EXCEEDED_REASON.equals(err.getReason())) {
-          // quota exceeded error
+        } else if (BigQueryErrorResponses.isQuotaExceededError(err)) {
           logger.warn("Quota exceeded for table {}, attempting retry", table);
           retryCount++;
-        } else if (err.getCode() == FORBIDDEN
-                   && err.getError() != null
-                   && RATE_LIMIT_EXCEEDED_REASON.equals(err.getReason())) {
-          // rate limit exceeded error
+        } else if (BigQueryErrorResponses.isRateLimitExceededError(err)) {
           logger.warn("Rate limit exceeded for table {}, attempting retry", table);
+          retryCount++;
+        } else if (BigQueryErrorResponses.isIOError(err)){
+          logger.warn("IO Exception: {}, attempting retry", err.getCause().getMessage());
           retryCount++;
         } else {
           throw err;
         }
       }
     } while (retryCount <= retries);
-    throw new BigQueryConnectException(
-        String.format("Exceeded configured %d attempts for write request", retries),
-        mostRecentException);
+      if (errantRecordHandler.getErrantRecordReporter() != null && failedRowsMap!=null) {
+        failedRowsMap = filterAndSendRecordsToDLQ(rows, failedRowsMap, table);
+        if (failedRowsMap.isEmpty())
+            return;
+      }
+      throw new BigQueryConnectException(
+          String.format("Exceeded configured %d attempts for write request", retries),
+          mostRecentException);
   }
 
   /**
@@ -203,5 +211,57 @@ public abstract class BigQueryWriter {
   private void waitRandomTime() throws InterruptedException {
     // wait
     Thread.sleep(retryWaitMs + random.nextInt(WAIT_MAX_JITTER));
+  }
+
+  /**
+   * Filter and send Records to DLQ according to allowedBigQueryReason List
+   * @param rows The rows to write.
+   * @param failedRowsMap map from failed row id to the BigQueryError
+   * @param table The BigQuery table to write the rows to
+   * @return Filtered Map from failed row id to the BigQueryError which cannot be sent to DLQ
+   */
+  private Map<Long, List<BigQueryError>> filterAndSendRecordsToDLQ(
+      SortedMap<SinkRecord, InsertAllRequest.RowToInsert> rows,
+      Map<Long, List<BigQueryError>> failedRowsMap,
+      PartitionedTableId table
+  ) {
+    long index = 0;
+    Set<SinkRecord> recordsToDLQ = new TreeSet<>(rows.comparator());
+    Map<Long, List<BigQueryError>> recordsToDLQFailureMap = new TreeMap<>();
+    Map<Long, List<BigQueryError>> updatedFailedRowMap = new TreeMap<>();
+    for (Map.Entry<SinkRecord, InsertAllRequest.RowToInsert> row : rows.entrySet()) {
+      if (failedRowsMap.containsKey(index)) {
+        if (errantRecordHandler.isErrorReasonAllowed(failedRowsMap.get(index))) {
+          recordsToDLQ.add(row.getKey());
+          recordsToDLQFailureMap.put(index, failedRowsMap.get(index));
+        } else {
+          updatedFailedRowMap.put(index, failedRowsMap.get(index));
+        }
+      }
+      index++;
+    }
+
+    if (errantRecordHandler.getErrantRecordReporter() != null) {
+      errantRecordHandler.sendRecordsToDLQ(
+          recordsToDLQ,
+          new BigQueryConnectException(table.toString(), recordsToDLQFailureMap)
+      );
+    }
+
+    return updatedFailedRowMap;
+  }
+
+  /**
+   *
+   * @param failedRowsMap: A map from failed row index to the BigQueryError
+   * @return true if all rows has Stopped BigQuery error reason else false.
+   */
+  private boolean hasStoppedErrorRecords(Map<Long, List<BigQueryError>> failedRowsMap) {
+    for (List<BigQueryError> errors : failedRowsMap.values()) {
+      if (!BigQueryErrorResponses.isStoppedError(errors.get(0))) {
+        return false;
+      }
+    }
+    return true;
   }
 }

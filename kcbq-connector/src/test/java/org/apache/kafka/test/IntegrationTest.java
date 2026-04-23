@@ -1,4 +1,3 @@
-#!/usr/bin/env groovy
 /*
  * Copyright 2020 Confluent, Inc.
  *
@@ -17,12 +16,14 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-common {
-  slackChannel = '#connect-warn'
-  nodeLabel = 'docker-oraclejdk8'
-  publish = false
-  downStreamValidate = false
-  secret_file_list = [
-          ['gcp/kcbq', 'creds',   '/tmp/creds.json', 'KCBQ_TEST_KEYFILE']
-  ]
+
+package org.apache.kafka.test;
+
+/**
+ * Marker interface for integration tests.
+ * This is a compatibility shim for Kafka 3.9.1 where the IntegrationTest annotation
+ * is no longer available in the test artifacts.
+ */
+public interface IntegrationTest {
+    // Marker interface - no methods needed
 }
