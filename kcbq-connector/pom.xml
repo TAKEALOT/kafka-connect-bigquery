@@ -178,42 +178,36 @@
             <artifactId>re2j</artifactId>
         </dependency>
 
-        <!-- gRPC dependencies - provided by Kafka Connect runtime to avoid classloader issues -->
+        <!-- gRPC dependencies - bundled into the isolated plugin lib/, the Connect runtime does not provide them -->
         <dependency>
             <groupId>io.grpc</groupId>
             <artifactId>grpc-context</artifactId>
             <version>1.75.0</version>
-            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>io.grpc</groupId>
             <artifactId>grpc-api</artifactId>
             <version>1.75.0</version>
-            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>io.grpc</groupId>
             <artifactId>grpc-core</artifactId>
             <version>1.75.0</version>
-            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>io.grpc</groupId>
             <artifactId>grpc-stub</artifactId>
             <version>1.75.0</version>
-            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>io.grpc</groupId>
             <artifactId>grpc-protobuf</artifactId>
             <version>1.75.0</version>
-            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>io.grpc</groupId>
             <artifactId>grpc-netty-shaded</artifactId>
             <version>1.75.0</version>
-            <scope>provided</scope>
         </dependency>
     </dependencies>
 
